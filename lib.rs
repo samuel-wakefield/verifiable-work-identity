@@ -1,141 +1,117 @@
-#![cfg_attr(not(feature = "std"), no_std, no_main)]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 #[ink::contract]
 mod linkedin {
+    use ink::storage::Mapping;
 
-    /// Defines the storage of your contract.
-    /// Add new fields to the below struct in order
-    /// to add new static storage fields to your contract.
+    #[derive(scale::Encode, scale::Decode, Clone, Debug, PartialEq, Eq)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    pub enum CredentialType {
+        WorkExperience,
+        Education,
+        Certification,
+        ProjectContribution,
+        SkillEndorsement,
+    }
+
+    #[derive(scale::Encode, scale::Decode, Clone)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    pub struct Credential {
+        issued_to: AccountId,
+        issued_by: AccountId,
+        credential_type: CredentialType,
+        metadata: String,
+        timestamp: u64,
+    }
+
     #[ink(storage)]
-    pub struct Linkedin {
-        /// Stores a single `bool` value on the storage.
-        value: bool,
+    pub struct CredentialSystem {
+        credentials: Mapping<AccountId, Vec<Credential>>,
+        // (user, issuer, type) => metadata
+        requests: Mapping<(AccountId, AccountId, CredentialType), String>,
     }
 
-    impl Linkedin {
-        /// Constructor that initializes the `bool` value to the given `init_value`.
+    impl CredentialSystem {
         #[ink(constructor)]
-        pub fn new(init_value: bool) -> Self {
-            Self { value: init_value }
+        pub fn new() -> Self {
+            Self {
+                credentials: Mapping::default(),
+                requests: Mapping::default(),
+            }
         }
 
-        /// Constructor that initializes the `bool` value to `false`.
-        ///
-        /// Constructors can delegate to other constructors.
-        #[ink(constructor)]
-        pub fn default() -> Self {
-            Self::new(Default::default())
-        }
+        /// Request a credential from a specific issuer
+        #[ink(message, payable)]
+        pub fn request_credential(
+            &mut self,
+            issuer: AccountId,
+            cred_type: CredentialType,
+            metadata: String,
+        ) -> Result<(), Error> {
+            let caller = self.env().caller();
+            let fee = self.env().transferred_value();
 
-        /// A message that can be called on instantiated contracts.
-        /// This one flips the value of the stored `bool` from `true`
-        /// to `false` and vice versa.
-        #[ink(message)]
-        pub fn flip(&mut self) {
-            self.value = !self.value;
-        }
+            if !self.has_identity(caller) || !self.has_identity(issuer) {
+                return Err(Error::IdentityRequired);
+            }
 
-        /// Simply returns the current value of our `bool`.
-        #[ink(message)]
-        pub fn get(&self) -> bool {
-            self.value
-        }
-    }
+            if fee < 2_000_000_000_000 {
+                return Err(Error::InsufficientFee); // example fee
+            }
 
-    /// Unit tests in Rust are normally defined within such a `#[cfg(test)]`
-    /// module and test functions are marked with a `#[test]` attribute.
-    /// The below code is technically just normal Rust code.
-    #[cfg(test)]
-    mod tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
-        use super::*;
+            self.requests.insert((caller, issuer, cred_type.clone()), &metadata);
 
-        /// We test if the default constructor does its job.
-        #[ink::test]
-        fn default_works() {
-            let linkedin = Linkedin::default();
-            assert_eq!(linkedin.get(), false);
-        }
-
-        /// We test a simple use case of our contract.
-        #[ink::test]
-        fn it_works() {
-            let mut linkedin = Linkedin::new(false);
-            assert_eq!(linkedin.get(), false);
-            linkedin.flip();
-            assert_eq!(linkedin.get(), true);
-        }
-    }
-
-
-    /// This is how you'd write end-to-end (E2E) or integration tests for ink! contracts.
-    ///
-    /// When running these you need to make sure that you:
-    /// - Compile the tests with the `e2e-tests` feature flag enabled (`--features e2e-tests`)
-    /// - Are running a Substrate node which contains `pallet-contracts` in the background
-    #[cfg(all(test, feature = "e2e-tests"))]
-    mod e2e_tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
-        use super::*;
-
-        /// A helper function used for calling contract messages.
-        use ink_e2e::ContractsBackend;
-
-        /// The End-to-End test `Result` type.
-        type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-        /// We test that we can upload and instantiate the contract using its default constructor.
-        #[ink_e2e::test]
-        async fn default_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let mut constructor = LinkedinRef::default();
-
-            // When
-            let contract = client
-                .instantiate("linkedin", &ink_e2e::alice(), &mut constructor)
-                .submit()
-                .await
-                .expect("instantiate failed");
-            let call_builder = contract.call_builder::<Linkedin>();
-
-            // Then
-            let get = call_builder.get();
-            let get_result = client.call(&ink_e2e::alice(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), false));
+            // Send fee directly to issuer
+            self.env().transfer(issuer, fee).map_err(|_| Error::TransferFailed)?;
 
             Ok(())
         }
 
-        /// We test that we can read and write a value from the on-chain contract.
-        #[ink_e2e::test]
-        async fn it_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let mut constructor = LinkedinRef::new(false);
-            let contract = client
-                .instantiate("linkedin", &ink_e2e::bob(), &mut constructor)
-                .submit()
-                .await
-                .expect("instantiate failed");
-            let mut call_builder = contract.call_builder::<Linkedin>();
+        #[ink(message)]
+        pub fn issue_credential(&mut self, user: AccountId, cred_type: CredentialType) -> Result<(), Error> {
+            let caller = self.env().caller(); // issuer
+            if !self.has_identity(caller) || !self.has_identity(user) {
+                return Err(Error::IdentityRequired);
+            }
 
-            let get = call_builder.get();
-            let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), false));
+            let key = (user, caller, cred_type.clone());
+            let metadata = self.requests.get(&key).ok_or(Error::NoRequest)?;
 
-            // When
-            let flip = call_builder.flip();
-            let _flip_result = client
-                .call(&ink_e2e::bob(), &flip)
-                .submit()
-                .await
-                .expect("flip failed");
+            let credential = Credential {
+                issued_to: user,
+                issued_by: caller,
+                credential_type: cred_type,
+                metadata,
+                timestamp: self.env().block_timestamp(),
+            };
 
-            // Then
-            let get = call_builder.get();
-            let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), true));
+            let mut user_creds = self.credentials.get(user).unwrap_or_default();
+            user_creds.push(credential);
+            self.credentials.insert(user, &user_creds);
+
+            // Clean up the request
+            self.requests.remove(&key);
 
             Ok(())
         }
+
+        #[ink(message)]
+        pub fn get_credentials(&self, user: AccountId) -> Vec<Credential> {
+            self.credentials.get(user).unwrap_or_default()
+        }
+
+        fn has_identity(&self, _account: AccountId) -> bool {
+            // Stub: real check should use chain extension to identity pallet
+            true
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    pub enum Error {
+        IdentityRequired,
+        NoRequest,
+        InsufficientFee,
+        TransferFailed,
     }
 }
