@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-contract CredentialSystem {
+contract Linkedin {
     enum CredentialType {
         WorkExperience,
         Education,
